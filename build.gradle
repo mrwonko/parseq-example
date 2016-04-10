@@ -1,0 +1,17 @@
+apply plugin: 'idea'
+apply plugin: 'eclipse'
+apply plugin: 'java'
+apply plugin: 'application'
+tasks.eclipse.dependsOn << [ 'cleanEclipse' ]
+idea.project.languageLevel = '1.8'
+sourceCompatibility = JavaVersion.VERSION_1_8
+
+repositories {
+    mavenCentral()
+}
+
+mainClassName = 'de.mrwonko.parseqexample.ParseqExample'
+
+dependencies {
+    compile 'com.linkedin.parseq:parseq:2.2.0'
+}
