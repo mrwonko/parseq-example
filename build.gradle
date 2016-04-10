@@ -13,5 +13,9 @@ repositories {
 mainClassName = 'de.mrwonko.parseqexample.ParseqExample'
 
 dependencies {
-    compile 'com.linkedin.parseq:parseq:2.2.0'
+    compile 'com.linkedin.parseq:parseq:2.2+'
+    compile 'org.apache.httpcomponents:httpasyncclient:4.+'
+    compile 'com.fasterxml.jackson.core:jackson-core:2.7+'
+    compile 'com.google.guava:guava:19.0+'
+    compile 'org.slf4j:slf4j-simple:1.7+'
 }
