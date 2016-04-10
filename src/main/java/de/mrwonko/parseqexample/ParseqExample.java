@@ -1,9 +1,8 @@
 package de.mrwonko.parseqexample;
 
-import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.StringWriter;
+import java.io.UnsupportedEncodingException;
+import java.net.URLEncoder;
 import java.util.List;
 import java.util.Scanner;
 import java.util.concurrent.CancellationException;
@@ -23,17 +22,27 @@ import org.apache.http.nio.client.HttpAsyncClient;
 import org.codehaus.jackson.JsonNode;
 import org.codehaus.jackson.map.ObjectMapper;
 import org.codehaus.jackson.node.ArrayNode;
+import org.codehaus.jackson.node.ObjectNode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Lists;
 import com.linkedin.parseq.Engine;
 import com.linkedin.parseq.EngineBuilder;
 import com.linkedin.parseq.Task;
+import com.linkedin.parseq.Tasks;
 import com.linkedin.parseq.promise.Promises;
 import com.linkedin.parseq.promise.SettablePromise;
 import com.linkedin.parseq.trace.TraceUtil;
 
 public class ParseqExample {
+    private static final Logger LOG = LoggerFactory.getLogger( ParseqExample.class );
+
+    private static final boolean TRACE = false;
+    private static final boolean LEFT_PAD = false;
+
     public static void main( final String[] args ) {
         final ExecutorService executor = Executors.newSingleThreadExecutor();
         final ExecutorService blockingExecutor = Executors.newCachedThreadPool();
@@ -52,18 +61,19 @@ public class ParseqExample {
         final Task<List<String>> task = Task.par(
             getFreiheitRepos( httpClient ),
 
-            naiveCountdown( blockingExecutor, 5, TimeUnit.SECONDS )
-                .andThen( "say world", __ -> { System.out.println( "world" ); } )
-                .withTimeout( 1, TimeUnit.SECONDS )
-                .recover( "recover from timeout", err -> null ),
-
             asyncCountdown( scheduler, 1, TimeUnit.SECONDS )
-                .andThen( "say hello", __ -> { System.out.println( "hello" ); } ) )
+                .andThen( "say hello", __ -> { LOG.info( "hello" ); } ),
+
+            naiveCountdown( blockingExecutor, 5, TimeUnit.SECONDS )
+                .andThen( "say world", __ -> { LOG.info( "world" ); } )
+                .withTimeout( 1, TimeUnit.SECONDS )
+                .recover( "recover from timeout", err -> null ) )
+
         // and what to do with the results (mostly ignore them)
-        .map( "print result", ( repos, __, ___  ) -> {
-            System.out.println( "Got the following freiheit-com GitHub repos:" );
+        .map( "print result", ( repos, __, ___ ) -> {
+            LOG.info( "Got the following freiheit-com GitHub repos:" );
             for ( final String repoName : repos ) {
-                System.out.println( "- " + repoName );
+                LOG.info( repoName );
             }
             return repos;
         } );
@@ -71,6 +81,7 @@ public class ParseqExample {
         task.setTraceValueSerializer( Joiner.on( ", " )::join );
 
         // submit the task for execution
+        LOG.info( "Beginning execution." );
         engine.run(
             task
             // sadly there's no Task.finally(), but this works similarly
@@ -82,7 +93,9 @@ public class ParseqExample {
                 blockingExecutor.shutdown();
                 executor.shutdown();
 
-                System.out.println( TraceUtil.getJsonTrace( task ) );
+                if ( TRACE ) {
+                    System.out.println( TraceUtil.getJsonTrace( task ) );
+                }
                 return maybeResult;
             } ) );
         engine.shutdown();
@@ -93,21 +106,50 @@ public class ParseqExample {
         final HttpGet request = new HttpGet( "https://api.github.com/orgs/freiheit-com/repos" );
         request.addHeader( "Accept", "application/vnd.github.v3+json" );
 
-        return execute( client, request )
-        .map( "read content", ParseqExample::readContent )
-        .map( "parse content", ( final String content ) -> {
-            final ObjectMapper mapper = new ObjectMapper();
-            final ArrayNode repoList = mapper.readValue( content, ArrayNode.class );
-            final ImmutableList.Builder<String> builder = ImmutableList.builder();
-            for ( final JsonNode repo : repoList ) {
-                builder.add( repo.path( "name" ).getTextValue() );
-            }
-            return builder.build();
-        } )
-        .recover( "recover from failed request", err -> {
-            err.printStackTrace( System.err );
-            return ImmutableList.of();
-        } );
+        Task<List<String>> fetchTask = execute( client, request )
+            .map( "read content", ParseqExample::readContent )
+            .map( "parse content", ( final String content ) -> {
+                final ObjectMapper mapper = new ObjectMapper();
+                final ArrayNode repoList = mapper.readValue( content, ArrayNode.class );
+                final ImmutableList.Builder<String> builder = ImmutableList.builder();
+                for ( final JsonNode repo : repoList ) {
+                    builder.add( repo.path( "name" ).getTextValue() );
+                }
+                return builder.build();
+            } );
+        if ( LEFT_PAD ) {
+            fetchTask = fetchTask.flatMap( repos -> leftPadAll( client, repos, 30 ) );
+        }
+        return fetchTask
+            .recover( "recover from failed request", err -> {
+                LOG.error( "failed to request Freiheit repos", err );
+                return ImmutableList.of();
+            } );
+    }
+    
+    private static Task<List<String>> leftPadAll(
+            final HttpAsyncClient client,
+            final List<String> strs,
+            final int len ) {
+        final List<Task<String>> tasks = Lists.transform( strs, str -> leftPad( client, str, len ) );
+        return Tasks.par( tasks );
+    }
+    
+    private static Task<String> leftPad(
+            final HttpAsyncClient client,
+            final String str,
+            final int len ) {
+        try {
+            final HttpGet request = new HttpGet( "https://api.left-pad.io/?len=" + len + "&str=" + URLEncoder.encode( str, "UTF-8" ) );
+            return execute( client, request )
+                    .map( "read content", ParseqExample::readContent )
+                    .map( "parse content", content -> new ObjectMapper()
+                            .readValue( content, ObjectNode.class )
+                            .get( "str" )
+                            .getTextValue() );
+        } catch ( final UnsupportedEncodingException e ) {
+            return Task.failure( e );
+        }
     }
 
     private static Task<HttpResponse> execute(
@@ -144,7 +186,7 @@ public class ParseqExample {
             final TimeUnit unit ) {
         return Task.blocking( "naive countdown " + time + " " + unit, () -> {
             Thread.sleep( unit.toMillis( time ) );
-            System.out.println( "naive countdown " + time + " " + unit + " completed." );
+            LOG.info( "naive countdown " + time + " " + unit + " completed." );
             return null;
         }, executor );
     }
@@ -157,7 +199,7 @@ public class ParseqExample {
             final SettablePromise<Void> promise = Promises.settable();
             scheduler.schedule( () -> {
                     promise.done( null );
-                    System.out.println( "async countdown " + time + " " + unit + " completed." );
+                    LOG.info( "async countdown " + time + " " + unit + " completed." );
                 }, time, unit );
             return promise;
         } );
