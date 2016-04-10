@@ -61,10 +61,10 @@ public class ParseqExample {
         final Task<List<String>> task = Task.par(
             getFreiheitRepos( httpClient ),
 
-            asyncCountdown( scheduler, 1, TimeUnit.SECONDS )
+            asyncWait( scheduler, 1, TimeUnit.SECONDS )
                 .andThen( "say hello", __ -> { LOG.info( "hello" ); } ),
 
-            naiveCountdown( blockingExecutor, 5, TimeUnit.SECONDS )
+            naiveWait( blockingExecutor, 5, TimeUnit.SECONDS )
                 .andThen( "say world", __ -> { LOG.info( "world" ); } )
                 .withTimeout( 1, TimeUnit.SECONDS )
                 .recover( "recover from timeout", err -> null ) )
@@ -109,6 +109,7 @@ public class ParseqExample {
         Task<List<String>> fetchTask = execute( client, request )
             .map( "read content", ParseqExample::readContent )
             .map( "parse content", ( final String content ) -> {
+                // JSON-Parsing using Jackson
                 final ObjectMapper mapper = new ObjectMapper();
                 final ArrayNode repoList = mapper.readValue( content, ArrayNode.class );
                 final ImmutableList.Builder<String> builder = ImmutableList.builder();
@@ -125,31 +126,6 @@ public class ParseqExample {
                 LOG.error( "failed to request Freiheit repos", err );
                 return ImmutableList.of();
             } );
-    }
-    
-    private static Task<List<String>> leftPadAll(
-            final HttpAsyncClient client,
-            final List<String> strs,
-            final int len ) {
-        final List<Task<String>> tasks = Lists.transform( strs, str -> leftPad( client, str, len ) );
-        return Tasks.par( tasks );
-    }
-    
-    private static Task<String> leftPad(
-            final HttpAsyncClient client,
-            final String str,
-            final int len ) {
-        try {
-            final HttpGet request = new HttpGet( "https://api.left-pad.io/?len=" + len + "&str=" + URLEncoder.encode( str, "UTF-8" ) );
-            return execute( client, request )
-                    .map( "read content", ParseqExample::readContent )
-                    .map( "parse content", content -> new ObjectMapper()
-                            .readValue( content, ObjectNode.class )
-                            .get( "str" )
-                            .getTextValue() );
-        } catch ( final UnsupportedEncodingException e ) {
-            return Task.failure( e );
-        }
     }
 
     private static Task<HttpResponse> execute(
@@ -180,31 +156,6 @@ public class ParseqExample {
         return task;
     }
 
-    private static Task<Void> naiveCountdown(
-            final Executor executor,
-            final long time,
-            final TimeUnit unit ) {
-        return Task.blocking( "naive countdown " + time + " " + unit, () -> {
-            Thread.sleep( unit.toMillis( time ) );
-            LOG.info( "naive countdown " + time + " " + unit + " completed." );
-            return null;
-        }, executor );
-    }
-
-    private static Task<Void> asyncCountdown(
-            final ScheduledExecutorService scheduler,
-            final long time,
-            final TimeUnit unit ) {
-        return Task.async( "async countdown " + time + " " + unit, () -> {
-            final SettablePromise<Void> promise = Promises.settable();
-            scheduler.schedule( () -> {
-                    promise.done( null );
-                    LOG.info( "async countdown " + time + " " + unit + " completed." );
-                }, time, unit );
-            return promise;
-        } );
-    }
-
     private static String readContent(
             final HttpResponse response )
             throws Exception {
@@ -218,5 +169,58 @@ public class ParseqExample {
             scanner.useDelimiter( "\\A" );
             return scanner.hasNext() ? scanner.next() : "";
         }
+    }
+
+    private static Task<Void> naiveWait(
+            final Executor executor,
+            final long time,
+            final TimeUnit unit ) {
+        return Task.blocking( "naive wait " + time + " " + unit, () -> {
+            Thread.sleep( unit.toMillis( time ) );
+            LOG.info( "naive wait " + time + " " + unit + " completed." );
+            return null;
+        }, executor );
+    }
+
+    private static Task<Void> asyncWait(
+            final ScheduledExecutorService scheduler,
+            final long time,
+            final TimeUnit unit ) {
+        return Task.async( "async wait " + time + " " + unit, () -> {
+            final SettablePromise<Void> promise = Promises.settable();
+            scheduler.schedule( () -> {
+                    promise.done( null );
+                    LOG.info( "async wait " + time + " " + unit + " completed." );
+                }, time, unit );
+            return promise;
+        } );
+    }
+
+    private static Task<List<String>> leftPadAll(
+            final HttpAsyncClient client,
+            final List<String> strs,
+            final int len ) {
+        final List<Task<String>> tasks = Lists.transform( strs, str -> leftPad( client, str, len ) );
+        return Tasks.par( tasks );
+    }
+
+    private static Task<String> leftPad(
+            final HttpAsyncClient client,
+            final String str,
+            final int len ) {
+        final HttpGet request;
+        try {
+            request = new HttpGet( "https://api.left-pad.io/"
+                + "?len=" + len
+                + "&str=" + URLEncoder.encode( str, "UTF-8" ) );
+        } catch ( final UnsupportedEncodingException e ) {
+            return Task.failure( e );
+        }
+        return execute( client, request )
+                .map( "read content", ParseqExample::readContent )
+                .map( "parse content", content -> new ObjectMapper()
+                        .readValue( content, ObjectNode.class )
+                        .get( "str" )
+                        .getTextValue() );
     }
 }
